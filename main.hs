@@ -34,6 +34,8 @@ import           Text.Feed.Query (feedItems, getItemTitle, getItemPublishDate, g
 import qualified Web.Twitter as TT
 import           Web.Twitter.OAuth (Consumer(..), singleAccessToken)
 
+import Xmppbot.Twitter (expandShortUrl)
+
 data Database = Database 
     { user      :: String
     , password  :: String
@@ -111,20 +113,23 @@ makeItem src item =
              <*> getItemPublishDate item
              <*> getItemLink item
 
+pprFeed :: FeedItem -> Text
+pprFeed item = T.pack $
+    "[" ++ feedItemSource item ++ "]: " 
+        ++ feedItemTitle item ++ " <" ++ feedItemLink item ++ ">"
+
 getTwitter :: Result Twitter -> IO [TwitterStatus]
 getTwitter (Success s) = do
     let consumer = Consumer (consumerKey s) (consumerSecret s)
     tok <- singleAccessToken consumer (oauthToken s) (oauthTokenSecret s) 
     st <- TT.homeTimeline tok []
-    return $ map makeStatus st
-  where
-    makeStatus st = TwitterStatus (TT.user st) (TT.text st) (TT.id_str st)
+    mapM makeStatus st
 getTwitter (Error err) = error $ "getTwitter failed :" ++ show err
 
-pprFeed :: FeedItem -> Text
-pprFeed item = T.pack $
-    "[" ++ feedItemSource item ++ "]: " 
-        ++ feedItemTitle item ++ " <" ++ feedItemLink item ++ ">"
+makeStatus :: TT.Status -> IO TwitterStatus
+makeStatus st = do
+    tweet <- expandShortUrl $ TT.text st
+    return $ TwitterStatus (TT.user st) tweet (TT.id_str st)
 
 pprTwitter :: TwitterStatus -> Text
 pprTwitter st = T.pack $
@@ -134,8 +139,8 @@ loadYaml :: String -> IO (M.HashMap Text Value)
 loadYaml fp = do
     mval <- decodeFile fp
     case mval of
-      Nothing  -> error $ "Invalid YAML file: " ++ show fp
-      Just obj -> return obj
+        Nothing  -> error $ "Invalid YAML file: " ++ show fp
+        Just obj -> return obj
 
 parseYaml :: FromJSON a => Text -> (M.HashMap Text Value) -> Result a
 parseYaml key hm =
