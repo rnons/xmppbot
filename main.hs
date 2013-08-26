@@ -76,12 +76,6 @@ FeedItem
     link  String
     UniqueItem title date
     deriving Show
-TwitterStatus
-    user String
-    text String
-    id_str String
-    UniqueStatus id_str
-    deriving Show
 |]
 
 mkConnStr :: Result Database -> IO C.ByteString
@@ -116,9 +110,9 @@ makeItem src item =
 pprFeed :: FeedItem -> Text
 pprFeed item = T.pack $
     "[" ++ feedItemSource item ++ "]: " 
-        ++ feedItemTitle item ++ " <" ++ feedItemLink item ++ ">"
+        ++ feedItemTitle item ++ " " ++ feedItemLink item
 
-getTwitter :: Result Twitter -> IO [TwitterStatus]
+getTwitter :: Result Twitter -> IO [FeedItem]
 getTwitter (Success s) = do
     let consumer = Consumer (consumerKey s) (consumerSecret s)
     tok <- singleAccessToken consumer (oauthToken s) (oauthTokenSecret s) 
@@ -126,14 +120,10 @@ getTwitter (Success s) = do
     mapM makeStatus st
 getTwitter (Error err) = error $ "getTwitter failed :" ++ show err
 
-makeStatus :: TT.Status -> IO TwitterStatus
+makeStatus :: TT.Status -> IO FeedItem
 makeStatus st = do
     tweet <- expandShortUrl $ TT.text st
-    return $ TwitterStatus (TT.user st) tweet (TT.id_str st)
-
-pprTwitter :: TwitterStatus -> Text
-pprTwitter st = T.pack $
-    "[@" ++ twitterStatusUser st ++ "]: " ++ twitterStatusText st
+    return $ FeedItem ('@' : TT.user st) tweet (TT.id_str st) ""
 
 loadYaml :: String -> IO (M.HashMap Text Value)
 loadYaml fp = do
@@ -142,7 +132,7 @@ loadYaml fp = do
         Nothing  -> error $ "Invalid YAML file: " ++ show fp
         Just obj -> return obj
 
-parseYaml :: FromJSON a => Text -> (M.HashMap Text Value) -> Result a
+parseYaml :: FromJSON a => Text -> M.HashMap Text Value -> Result a
 parseYaml key hm =
     case M.lookup key hm of
         Just val -> fromJSON val
@@ -164,8 +154,7 @@ main = do
 
     result <- session
                  "google.com"
-                  (Just (\_ -> ( [plain botName Nothing botWord])
-                               , Nothing))
+                  (Just (const [plain botName Nothing botWord], Nothing))
                   def { 
                       sessionStreamConfiguration = def { 
                           tlsParams = defaultParamsClient { 
@@ -184,24 +173,15 @@ main = do
     when (presenceType presence == Available) $ do
         items <- getFeedItems feeds
         status <- getTwitter twitter
-        withPostgresqlPool connStr 10 $ \pool -> do
+        withPostgresqlPool connStr 10 $ \pool ->
             flip runSqlPersistMPool pool $ do
                 runMigration migrateAll
 
-                -- Generic feeds
-                forM_ items $ \j -> do
+                -- Insert feeds to DB if not exist and send to contact
+                forM_ (items ++ status) $ \j -> do
                     ent <- insertBy j
                     case ent of
                         Left (Entity k v) -> liftIO $ return ()
                         Right _ -> do
                             let reply = simpleIM (parseJid $ T.unpack contact) (pprFeed j)
-                            void $ liftIO $ sendMessage reply sess 
-
-                -- Twitter timeline
-                forM_ status $ \j -> do
-                    ent <- insertBy j
-                    case ent of
-                        Left (Entity k v) -> liftIO $ return ()
-                        Right _ -> do
-                            let reply = simpleIM (parseJid $ T.unpack contact) (pprTwitter j)
                             void $ liftIO $ sendMessage reply sess 
