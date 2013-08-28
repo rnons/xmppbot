@@ -14,8 +14,6 @@ import qualified Data.ByteString.Lazy.Char8 as LC
 import           Data.Default (def)
 import qualified Data.HashMap.Strict as M
 import           Data.Maybe
-import           Data.Monoid ((<>))
-import           Data.Time (ZonedTime)
 import           Data.Text (Text)
 import qualified Data.Text as T
 import           Data.Yaml
@@ -24,13 +22,16 @@ import           Database.Persist.Postgresql
 import           Database.Persist.TH
 import           GHC.Generics (Generic)
 import           Network.HTTP.Conduit (simpleHttp)
-import           Network.TLS (Params(pConnectVersion, pAllowedVersions, pCiphers), Version(TLS10, TLS11, TLS12), defaultParamsClient)
+import           Network.TLS ( Params(pConnectVersion, pAllowedVersions, pCiphers)
+                             , Version(TLS10, TLS11, TLS12)
+                             , defaultParamsClient )
 import           Network.TLS.Extra (ciphersuite_medium)
 import           Network.Xmpp
 import           Network.Xmpp.IM (simpleIM)
 import           Text.Feed.Import (parseFeedString)
 import qualified Text.Feed.Types as F
-import           Text.Feed.Query (feedItems, getItemTitle, getItemPublishDate, getItemLink)
+import           Text.Feed.Query ( feedItems, getItemTitle
+                                 , getItemPublishDate, getItemLink)
 import qualified Web.Twitter as TT
 import           Web.Twitter.OAuth (Consumer(..), singleAccessToken)
 
@@ -78,24 +79,23 @@ FeedItem
     deriving Show
 |]
 
-mkConnStr :: Result Database -> IO C.ByteString
-mkConnStr (Success s) = return $ C.pack $ "host=" <> host s <>
-               " dbname=" <> database s <>
-               " user=" <> user s <>
-               " password=" <> password s <>
-               " port=" <> show (port s)
-mkConnStr (Error err) = error $ "mkConnStr failed: " ++ show err
+mkConnStr :: Database -> IO C.ByteString
+mkConnStr s = return $ C.pack $ "host=" ++ host s ++
+                                " dbname=" ++ database s ++
+                                " user=" ++ user s ++
+                                " password=" ++ password s ++
+                                " port=" ++ show (port s)
 
-getFeedItems :: Result [Feeds] -> IO [FeedItem]
-getFeedItems (Success feeds) = fmap concat $ mapM getFeed feeds
-getFeedItems (Error err) = error $ "Parse feedlist failed: " ++ show err
+getFeedItems :: [Feeds] -> IO [FeedItem]
+getFeedItems feeds = fmap concat $ mapM getFeed feeds
 
 getFeed :: Feeds -> IO [FeedItem]
 getFeed feedsource = do
     result <- simpleHttp $ url feedsource
     let feed = parseFeedString $ LC.unpack result
     let items = case feed of
-                    Just f -> fromMaybe [] $ mapM (makeItem $ name feedsource) (feedItems f)
+                    Just f  -> fromMaybe [] $ 
+                               mapM (makeItem $ name feedsource) (feedItems f)
                     Nothing -> []
     return items
 
@@ -112,13 +112,12 @@ pprFeed item = T.pack $
     "[" ++ feedItemSource item ++ "]: " 
         ++ feedItemTitle item ++ " " ++ feedItemLink item
 
-getTwitter :: Result Twitter -> IO [FeedItem]
-getTwitter (Success s) = do
+getTwitter :: Twitter -> IO [FeedItem]
+getTwitter s = do
     let consumer = Consumer (consumerKey s) (consumerSecret s)
     tok <- singleAccessToken consumer (oauthToken s) (oauthTokenSecret s) 
     st <- TT.homeTimeline tok []
     mapM makeStatus st
-getTwitter (Error err) = error $ "getTwitter failed :" ++ show err
 
 makeStatus :: TT.Status -> IO FeedItem
 makeStatus st = do
@@ -132,48 +131,45 @@ loadYaml fp = do
         Nothing  -> error $ "Invalid YAML file: " ++ show fp
         Just obj -> return obj
 
-parseYaml :: FromJSON a => Text -> M.HashMap Text Value -> Result a
+parseYaml :: FromJSON a => Text -> M.HashMap Text Value -> a
 parseYaml key hm =
     case M.lookup key hm of
-        Just val -> fromJSON val
-        Nothing  -> Error $ "Failed to load " ++ T.unpack key
+        Just val -> case fromJSON val of
+                        Success s -> s
+                        Error err -> error $ "Falied to parse " 
+                                           ++ T.unpack key ++ ": " ++ show err
+        Nothing  -> error $ "Failed to load " ++ T.unpack key 
+                                              ++ " from config file"
 
 main :: IO ()
 main = do
     config <- loadYaml "bot.yml"
-    let db = parseYaml "Database" config :: Result Database
-        account = parseYaml "Account" config :: Result Account
-        twitter = parseYaml "Twitter" config :: Result Twitter
-        feeds = parseYaml "Feeds" config :: Result [Feeds]
+    let db = parseYaml "Database" config :: Database
+        account = parseYaml "Account" config :: Account
+        twitter = parseYaml "Twitter" config :: Twitter
+        feeds = parseYaml "Feeds" config :: [Feeds]
 
     connStr <- mkConnStr db
-    (botName, botWord, contact) <-
-        case account of
-            Success acc -> return (botUsername acc, botPassword acc, contactUsername acc)
-            Error err -> error $ "Parse account failed:" ++ show err
-
-    result <- session
-                 "google.com"
-                  (Just (const [plain botName Nothing botWord], Nothing))
-                  def { 
-                      sessionStreamConfiguration = def { 
-                          tlsParams = defaultParamsClient { 
-                              pConnectVersion = TLS10, 
-                              pAllowedVersions = [TLS10, TLS11, TLS12], 
-                              pCiphers = ciphersuite_medium 
-                              } 
-                          } 
-                      }
+    result <- 
+        session "google.com"
+                (Just (const [plain (botUsername account) 
+                                    Nothing 
+                                    (botPassword account)], Nothing))
+                def { sessionStreamConfiguration = def 
+                        { tlsParams = defaultParamsClient 
+                            { pConnectVersion = TLS10
+                            , pAllowedVersions = [TLS10, TLS11, TLS12]
+                            , pCiphers = ciphersuite_medium } } }
     sess <- case result of
                 Right s -> return s
                 Left e -> error $ "XmppFailure: " ++ show e
     sendPresence def sess
     presence <- waitForPresence (\p ->
-        fmap toBare (presenceFrom p) == jidFromText contact) sess
+        fmap toBare (presenceFrom p) == jidFromText (contactUsername account)) sess
     when (presenceType presence == Available) $ do
         items <- getFeedItems feeds
         status <- getTwitter twitter
-        withPostgresqlPool connStr 10 $ \pool ->
+        withPostgresqlPool connStr (poolsize db) $ \pool ->
             flip runSqlPersistMPool pool $ do
                 runMigration migrateAll
 
@@ -181,7 +177,7 @@ main = do
                 forM_ (items ++ status) $ \j -> do
                     ent <- insertBy j
                     case ent of
-                        Left (Entity k v) -> liftIO $ return ()
+                        Left (Entity _ _) -> liftIO $ return ()
                         Right _ -> do
-                            let reply = simpleIM (parseJid $ T.unpack contact) (pprFeed j)
+                            let reply = simpleIM (parseJid $ T.unpack $ contactUsername account) (pprFeed j)
                             void $ liftIO $ sendMessage reply sess 
