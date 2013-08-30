@@ -117,12 +117,9 @@ getTwitter s = do
     let consumer = Consumer (consumerKey s) (consumerSecret s)
     tok <- singleAccessToken consumer (oauthToken s) (oauthTokenSecret s) 
     st <- TT.homeTimeline tok []
-    mapM makeStatus st
-
-makeStatus :: TT.Status -> IO FeedItem
-makeStatus st = do
-    tweet <- expandShortUrl $ TT.text st
-    return $ FeedItem ('@' : TT.user st) tweet (TT.id_str st) ""
+    return $ map makeStatus st 
+  where
+    makeStatus st = FeedItem ('@' : TT.user st) (TT.text st) (TT.id_str st) ""
 
 loadYaml :: String -> IO (M.HashMap Text Value)
 loadYaml fp = do
@@ -148,7 +145,7 @@ main = do
         account = parseYaml "Account" config :: Account
         twitter = parseYaml "Twitter" config :: Twitter
         feeds = parseYaml "Feeds" config :: [Feeds]
-
+        contactJid = parseJid $ T.unpack $ contactUsername account
     connStr <- mkConnStr db
     result <- 
         session "google.com"
@@ -165,7 +162,7 @@ main = do
                 Left e -> error $ "XmppFailure: " ++ show e
     sendPresence def sess
     presence <- waitForPresence (\p ->
-        fmap toBare (presenceFrom p) == jidFromText (contactUsername account)) sess
+        fmap toBare (presenceFrom p) == Just contactJid) sess
     when (presenceType presence == Available) $ do
         items <- getFeedItems feeds
         status <- getTwitter twitter
@@ -174,10 +171,20 @@ main = do
                 runMigration migrateAll
 
                 -- Insert feeds to DB if not exist and send to contact
-                forM_ (items ++ status) $ \j -> do
+                forM_ items $ \j -> do
                     ent <- insertBy j
                     case ent of
                         Left (Entity _ _) -> liftIO $ return ()
                         Right _ -> do
-                            let reply = simpleIM (parseJid $ T.unpack $ contactUsername account) (pprFeed j)
+                            let reply = simpleIM contactJid (pprFeed j)
                             void $ liftIO $ sendMessage reply sess 
+
+                -- Insert twitter status to DB if not exist
+                forM_ status $ \j -> do
+                    ent <- insertBy j
+                    case ent of
+                        Left (Entity _ _) -> liftIO $ return ()
+                        Right _ -> liftIO $ do
+                            expanded <- expandShortUrl (feedItemTitle j)
+                            let reply = simpleIM contactJid (pprFeed j {feedItemTitle = expanded})
+                            void $ sendMessage reply sess 

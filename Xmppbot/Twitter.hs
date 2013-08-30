@@ -12,41 +12,41 @@ import qualified Data.HashMap.Strict as HM
 import           Network.HTTP.Conduit
 import           Network.HTTP.Types.Header (hLocation)
 
-tco, stco :: C.ByteString
-tco = "http://t.co/"
-stco = "https://t.co/"
-
 expandShortUrl :: String -> IO String
-expandShortUrl tweet = do
-    let pieces = parseOnly tweetParser (C.pack $ encodeString tweet)
-    lurls <- case pieces of
+expandShortUrl tweet =
+    case parseTweet tweet of
         Right pieces' -> do
-            forM pieces' $ \piece ->
-                if (tco `C.isPrefixOf` piece)
-                    then expand piece >>= return
-                    else
-                        return piece
-        Left err -> return []
-    return $ unwords $ map (decodeString . C.unpack) lurls
+            expanded <- forM pieces' $ \piece ->
+                if isURI piece then expand piece 
+                               else return piece
+            return $ unwords $ map (decodeString . C.unpack) expanded
+        Left err -> return tweet
+  where
+    parseTweet t = parseOnly tweetParser (C.pack $ encodeString t)
+    isURI u = "http://" `C.isPrefixOf` u || "https://" `C.isPrefixOf` u
 
 expand :: C.ByteString -> IO C.ByteString
 expand piece = do
     req <- parseUrl $ C.unpack piece
     E.catch (withManager $ \manager -> 
-                httpLbs req { redirectCount = 0 } manager >> return "")
-            (\(StatusCodeException s hdr _) -> do
-                case HM.lookup hLocation $ HM.fromList hdr of
-                    Just url -> return url
-                    Nothing  -> return "")
+                httpLbs req { redirectCount = 0 } manager >> return piece)
+            (\e -> case e of
+                (StatusCodeException s hdr _) -> redirect hdr >>= expand
+                otherException -> print otherException >> return piece
+            )
+  where
+    redirect hdr = case HM.lookup hLocation $ HM.fromList hdr of 
+                        Just url -> return url
+                        Nothing  -> return piece
 
-tcoParser :: Parser [C.ByteString]
-tcoParser = do
-    v <- manyTill anyChar (try (string tco <|> string stco))
+schemeParser :: C.ByteString -> Parser [C.ByteString]
+schemeParser scheme = do
+    v <- manyTill anyChar (try (string scheme))
     link <- takeTill isSpace
-    return $ [C.pack v, C.append tco link]
+    return [C.pack v, C.append scheme link]
 
 tweetParser :: Parser [C.ByteString]
 tweetParser = do
-    piece <- many tcoParser
+    piece <- many (schemeParser "http://" <|> schemeParser "https://")
     rest <- takeByteString
     return $ concat piece ++ [rest]
