@@ -12,6 +12,9 @@ import qualified Data.HashMap.Strict as HM
 import           Network.HTTP.Conduit
 import           Network.HTTP.Types.Header (hLocation)
 
+isURI :: C.ByteString -> Bool
+isURI u = "http://" `C.isPrefixOf` u || "https://" `C.isPrefixOf` u
+
 expandShortUrl :: String -> IO String
 expandShortUrl tweet =
     case parseTweet tweet of
@@ -23,15 +26,17 @@ expandShortUrl tweet =
         Left err -> return tweet
   where
     parseTweet t = parseOnly tweetParser (C.pack $ encodeString t)
-    isURI u = "http://" `C.isPrefixOf` u || "https://" `C.isPrefixOf` u
 
 expand :: C.ByteString -> IO C.ByteString
 expand piece = do
-    req <- parseUrl $ C.unpack piece
-    E.catch (withManager $ \manager -> 
-                httpLbs req { redirectCount = 0 } manager >> return piece)
+    E.catch (do req <- parseUrl $ C.unpack piece
+                withManager $ \manager -> 
+                    httpLbs req { redirectCount = 0 } manager >> return piece)
             (\e -> case e of
-                (StatusCodeException s hdr _) -> redirect hdr >>= expand
+                (StatusCodeException s hdr _) -> do
+                    uri <- redirect hdr 
+                    -- Sometimes, the location header has no host name!
+                    if isURI uri then expand uri else return piece
                 otherException -> print otherException >> return piece
             )
   where
@@ -39,14 +44,14 @@ expand piece = do
                         Just url -> return url
                         Nothing  -> return piece
 
-schemeParser :: C.ByteString -> Parser [C.ByteString]
-schemeParser scheme = do
+uriParser :: C.ByteString -> Parser [C.ByteString]
+uriParser scheme = do
     v <- manyTill anyChar (try (string scheme))
-    link <- takeTill isSpace
+    link <- takeTill $ notInClass "0-9a-zA-z.:/"
     return [C.pack v, C.append scheme link]
 
 tweetParser :: Parser [C.ByteString]
 tweetParser = do
-    piece <- many (schemeParser "http://" <|> schemeParser "https://")
+    piece <- many (uriParser "http://" <|> uriParser "https://")
     rest <- takeByteString
     return $ concat piece ++ [rest]
