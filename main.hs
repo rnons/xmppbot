@@ -1,12 +1,16 @@
-{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs             #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes       #-}
 {-# LANGUAGE TemplateHaskell   #-}
 {-# LANGUAGE TypeFamilies      #-}
 import           Control.Applicative ((<$>), (<*>))
+import           Control.DeepSeq (NFData)
 import           Control.Monad (forM_, void, when)
+import           Control.Monad.Par.Combinator (parMapM)
+import           Control.Monad.Par.IO (runParIO)
 import           Control.Monad.IO.Class  (liftIO)
 import           Data.Aeson (Result(..), fromJSON)
 import qualified Data.ByteString.Char8 as C
@@ -79,6 +83,8 @@ FeedItem
     deriving Show
 |]
 
+instance NFData FeedItem
+
 mkConnStr :: Database -> IO C.ByteString
 mkConnStr s = return $ C.pack $ "host=" ++ host s ++
                                 " dbname=" ++ database s ++
@@ -87,7 +93,8 @@ mkConnStr s = return $ C.pack $ "host=" ++ host s ++
                                 " port=" ++ show (port s)
 
 getFeedItems :: [Feeds] -> IO [FeedItem]
-getFeedItems feeds = fmap concat $ mapM getFeed feeds
+getFeedItems feeds = fmap concat $ do
+    runParIO (parMapM (liftIO . getFeed) feeds)
 
 getFeed :: Feeds -> IO [FeedItem]
 getFeed feedsource = do
