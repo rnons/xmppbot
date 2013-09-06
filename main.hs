@@ -86,9 +86,6 @@ mkConnStr s = return $ C.pack $ "host=" ++ host s ++
                                 " password=" ++ password s ++
                                 " port=" ++ show (port s)
 
-getFeedItems :: [Feeds] -> IO [FeedItem]
-getFeedItems feeds = fmap concat $ mapM getFeed feeds
-
 getFeed :: Feeds -> IO [FeedItem]
 getFeed feedsource = do
     result <- simpleHttp $ url feedsource
@@ -164,22 +161,27 @@ main = do
     presence <- waitForPresence (\p ->
         fmap toBare (presenceFrom p) == Just contactJid) sess
     when (presenceType presence == Available) $ do
-        items <- getFeedItems feeds
         status <- getTwitter twitter
         withPostgresqlPool connStr (poolsize db) $ \pool ->
             flip runSqlPersistMPool pool $ do
                 runMigration migrateAll
 
-                -- Insert feeds to DB if not exist and send to contact
-                forM_ items $ \j -> do
-                    ent <- insertBy j
-                    case ent of
-                        Left (Entity _ _) -> liftIO $ return ()
-                        Right _ -> do
-                            let reply = simpleIM contactJid (pprFeed j)
-                            void $ liftIO $ sendMessage reply sess 
+        -- Insert feeds to DB if not exist and send to contact
+        forM_ feeds $ \f -> do
+            items <- getFeed f
+            withPostgresqlPool connStr (poolsize db) $ \pool ->
+                flip runSqlPersistMPool pool $ do
+                    forM_ items $ \j -> do
+                        ent <- insertBy j
+                        case ent of
+                            Left (Entity _ _) -> liftIO $ return ()
+                            Right _ -> do
+                                let reply = simpleIM contactJid (pprFeed j)
+                                void $ liftIO $ sendMessage reply sess 
 
-                -- Insert twitter status to DB if not exist
+        -- Insert twitter status to DB if not exist
+        withPostgresqlPool connStr (poolsize db) $ \pool ->
+            flip runSqlPersistMPool pool $ do
                 forM_ status $ \j -> do
                     ent <- insertBy j
                     case ent of
