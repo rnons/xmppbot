@@ -13,6 +13,7 @@ import qualified Data.ByteString.Char8 as C
 import qualified Data.ByteString.Lazy.Char8 as LC
 import           Data.Default (def)
 import qualified Data.HashMap.Strict as M
+import           Data.IORef
 import           Data.Maybe
 import           Data.Text (Text)
 import qualified Data.Text as T
@@ -169,6 +170,7 @@ main = do
         -- Insert feeds to DB if not exist and send to contact
         forM_ feeds $ \f -> do
             items <- getFeed f
+            msg <- newIORef [] :: IO (IORef [FeedItem])
             withPostgresqlPool connStr (poolsize db) $ \pool ->
                 flip runSqlPersistMPool pool $ do
                     forM_ items $ \j -> do
@@ -176,8 +178,11 @@ main = do
                         case ent of
                             Left (Entity _ _) -> liftIO $ return ()
                             Right _ -> do
-                                let reply = simpleIM contactJid (pprFeed j)
-                                void $ liftIO $ sendMessage reply sess 
+                                liftIO $ modifyIORef msg (j:)
+                    liftIO $ do
+                        toSend <- readIORef msg
+                        let reply = simpleIM contactJid (T.unlines $ map pprFeed toSend)
+                        void $ sendMessage reply sess 
 
         -- Insert twitter status to DB if not exist
         withPostgresqlPool connStr (poolsize db) $ \pool ->
@@ -190,3 +195,5 @@ main = do
                             expanded <- expandShortUrl (feedItemTitle j)
                             let reply = simpleIM contactJid (pprFeed j {feedItemTitle = expanded})
                             void $ sendMessage reply sess 
+
+    endSession sess
