@@ -6,6 +6,9 @@
 {-# LANGUAGE TemplateHaskell   #-}
 {-# LANGUAGE TypeFamilies      #-}
 import           Control.Applicative ((<$>), (<*>))
+import           Control.Concurrent (forkIO, threadDelay)
+import           Control.Concurrent.MVar ( newEmptyMVar, isEmptyMVar
+                                         , putMVar, takeMVar)
 import           Control.Monad (forM_, void, when)
 import           Control.Monad.IO.Class  (liftIO)
 import           Data.Aeson (Result(..), fromJSON)
@@ -29,6 +32,8 @@ import           Network.TLS ( Params(pConnectVersion, pAllowedVersions, pCipher
 import           Network.TLS.Extra (ciphersuite_medium)
 import           Network.Xmpp
 import           Network.Xmpp.IM (simpleIM)
+import           System.Exit (ExitCode(..))
+import           System.Posix.Process (exitImmediately)
 import           Text.Feed.Import (parseFeedString)
 import qualified Text.Feed.Types as F
 import           Text.Feed.Query ( feedItems, getItemTitle
@@ -159,9 +164,18 @@ main = do
                 Right s -> return s
                 Left e -> error $ "XmppFailure: " ++ show e
     sendPresence def sess
+    online <- newEmptyMVar
+
+    -- If contact is offline, terminate!
+    forkIO $ do 
+        threadDelay 10000000     -- 10 seconds
+        empty <- isEmptyMVar online
+        when empty (exitImmediately $ ExitFailure 1)
+
     presence <- waitForPresence (\p ->
         fmap toBare (presenceFrom p) == Just contactJid) sess
     when (presenceType presence == Available) $ do
+        putMVar online ()
         status <- getTwitter twitter
         withPostgresqlPool connStr (poolsize db) $ \pool ->
             flip runSqlPersistMPool pool $ do
