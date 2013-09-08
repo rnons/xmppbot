@@ -169,8 +169,9 @@ main = do
     -- If contact is offline, terminate!
     forkIO $ do 
         threadDelay 10000000     -- 10 seconds
-        empty <- isEmptyMVar online
-        when empty (exitImmediately $ ExitFailure 1)
+        isEmptyMVar online >>= 
+            flip when (do sendPresence presenceOffline sess 
+                          exitImmediately $ ExitFailure 1)
 
     presence <- waitForPresence (\p ->
         fmap toBare (presenceFrom p) == Just contactJid) sess
@@ -178,8 +179,7 @@ main = do
         putMVar online ()
         status <- getTwitter twitter
         withPostgresqlPool connStr (poolsize db) $ \pool ->
-            flip runSqlPersistMPool pool $ do
-                runMigration migrateAll
+            flip runSqlPersistMPool pool $ runMigration migrateAll
 
         -- Insert feeds to DB if not exist and send to contact
         forM_ feeds $ \f -> do
@@ -191,8 +191,7 @@ main = do
                         ent <- insertBy j
                         case ent of
                             Left (Entity _ _) -> liftIO $ return ()
-                            Right _ -> do
-                                liftIO $ modifyIORef msg (j:)
+                            Right _ -> liftIO $ modifyIORef msg (j:)
                     liftIO $ do
                         toSend <- readIORef msg
                         let reply = simpleIM contactJid (T.unlines $ map pprFeed toSend)
@@ -200,7 +199,7 @@ main = do
 
         -- Insert twitter status to DB if not exist
         withPostgresqlPool connStr (poolsize db) $ \pool ->
-            flip runSqlPersistMPool pool $ do
+            flip runSqlPersistMPool pool $
                 forM_ status $ \j -> do
                     ent <- insertBy j
                     case ent of
@@ -210,4 +209,5 @@ main = do
                             let reply = simpleIM contactJid (pprFeed j {feedItemTitle = expanded})
                             void $ sendMessage reply sess 
 
+    sendPresence presenceOffline sess
     endSession sess
