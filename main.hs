@@ -33,6 +33,8 @@ import           Network.TLS.Extra (ciphersuite_medium)
 import           Network.Xmpp
 import           Network.Xmpp.IM (simpleIM)
 import           System.Exit (ExitCode(..))
+import           System.IO (openFile, IOMode(..))
+import           System.Log.FastLogger
 import           System.Posix.Process (exitImmediately)
 import           Text.Feed.Import (parseFeedString)
 import qualified Text.Feed.Types as F
@@ -141,8 +143,20 @@ parseYaml key hm =
         Nothing  -> error $ "Failed to load " ++ T.unpack key 
                                               ++ " from config file"
 
+writeLog :: Logger -> String -> IO ()
+writeLog logger msg = do
+    date <- loggerDate logger
+    loggerPutStr logger
+        [ LB date
+        , LB " "
+        , LS msg
+        , LB "\n"
+        ]
+        
 main :: IO ()
 main = do
+    logger <- mkLogger True =<< openFile "bot.log" AppendMode
+    let log = writeLog logger
     config <- loadYaml "bot.yml"
     let db = parseYaml "Database" config :: Database
         account = parseYaml "Account" config :: Account
@@ -161,23 +175,28 @@ main = do
                             , pAllowedVersions = [TLS10, TLS11, TLS12]
                             , pCiphers = ciphersuite_medium } } }
     sess <- case result of
-                Right s -> return s
-                Left e -> error $ "XmppFailure: " ++ show e
+                Right s -> log  "Session created." >> return s
+                Left e -> log "Session Failed." >> 
+                          error ("XmppFailure: " ++ show e)
     sendPresence def sess
     online <- newEmptyMVar
+
+    let shutdown :: IO ()
+        shutdown = do
+            rmLogger logger
+            sendPresence presenceOffline sess 
+            endSession sess
 
     -- If contact is offline, terminate!
     forkIO $ do 
         threadDelay 10000000     -- 10 seconds
         isEmptyMVar online >>= 
-            flip when (do sendPresence presenceOffline sess 
-                          exitImmediately $ ExitFailure 1)
+            flip when (shutdown >> exitImmediately (ExitFailure 1))
 
     presence <- waitForPresence (\p ->
         fmap toBare (presenceFrom p) == Just contactJid) sess
     when (presenceType presence == Available) $ do
         putMVar online ()
-        status <- getTwitter twitter
         withPostgresqlPool connStr (poolsize db) $ \pool ->
             flip runSqlPersistMPool pool $ runMigration migrateAll
 
@@ -193,11 +212,15 @@ main = do
                             Left (Entity _ _) -> liftIO $ return ()
                             Right _ -> liftIO $ modifyIORef msg (j:)
                     liftIO $ do
+                        log (name f ++ " fetched.")
                         toSend <- readIORef msg
                         let reply = simpleIM contactJid (T.unlines $ map pprFeed toSend)
                         void $ sendMessage reply sess 
+                        log (name f ++ " sended.")
 
         -- Insert twitter status to DB if not exist
+        status <- getTwitter twitter
+        log "Twitter timeline fetched."
         withPostgresqlPool connStr (poolsize db) $ \pool ->
             flip runSqlPersistMPool pool $
                 forM_ status $ \j -> do
@@ -208,6 +231,5 @@ main = do
                             expanded <- expandShortUrl (feedItemTitle j)
                             let reply = simpleIM contactJid (pprFeed j {feedItemTitle = expanded})
                             void $ sendMessage reply sess 
-
-    sendPresence presenceOffline sess
-    endSession sess
+        log "Twitter timeline sended."
+    shutdown

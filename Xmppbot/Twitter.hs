@@ -11,6 +11,7 @@ import qualified Data.ByteString.Char8 as C
 import qualified Data.HashMap.Strict as HM
 import           Network.HTTP.Conduit
 import           Network.HTTP.Types.Header (hLocation)
+import           Network.HTTP.Types.Status (status301)
 
 isURI :: C.ByteString -> Bool
 isURI u = "http://" `C.isPrefixOf` u || "https://" `C.isPrefixOf` u
@@ -28,15 +29,17 @@ expandShortUrl tweet =
     parseTweet t = parseOnly tweetParser (C.pack $ encodeString t)
 
 expand :: C.ByteString -> IO C.ByteString
-expand piece = do
+expand piece =
     E.catch (do req <- parseUrl $ C.unpack piece
                 withManager $ \manager -> 
                     httpLbs req { redirectCount = 0 } manager >> return piece)
             (\e -> case e of
-                (StatusCodeException s hdr _) -> do
-                    uri <- redirect hdr 
-                    -- Sometimes, the location header has no host name!
-                    if isURI uri then expand uri else return piece
+                (StatusCodeException s hdr _) ->
+                    if s == status301 then do
+                        uri <- redirect hdr 
+                        -- Sometimes, the location header has no host name!
+                        if isURI uri then expand uri else return piece
+                    else return piece
                 otherException -> print otherException >> return piece
             )
   where
@@ -47,7 +50,7 @@ expand piece = do
 uriParser :: C.ByteString -> Parser [C.ByteString]
 uriParser scheme = do
     v <- manyTill anyChar (try (string scheme))
-    link <- takeTill $ notInClass "0-9a-zA-z.:/"
+    link <- takeTill $ notInClass "0-9a-zA-z.:/-"
     return [C.pack v, C.append scheme link]
 
 tweetParser :: Parser [C.ByteString]
