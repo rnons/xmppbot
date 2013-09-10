@@ -6,9 +6,6 @@
 {-# LANGUAGE TemplateHaskell   #-}
 {-# LANGUAGE TypeFamilies      #-}
 import           Control.Applicative ((<$>), (<*>))
-import           Control.Concurrent (forkIO, threadDelay)
-import           Control.Concurrent.MVar ( newEmptyMVar, isEmptyMVar
-                                         , putMVar, takeMVar)
 import           Control.Monad (forM_, void, when)
 import           Control.Monad.IO.Class  (liftIO)
 import           Data.Aeson (Result(..), fromJSON)
@@ -36,6 +33,7 @@ import           System.Exit (ExitCode(..))
 import           System.IO (openFile, IOMode(..))
 import           System.Log.FastLogger
 import           System.Posix.Process (exitImmediately)
+import           System.Timeout (timeout)
 import           Text.Feed.Import (parseFeedString)
 import qualified Text.Feed.Types as F
 import           Text.Feed.Query ( feedItems, getItemTitle
@@ -179,24 +177,12 @@ main = do
                 Left e -> log "Session Failed." >> 
                           error ("XmppFailure: " ++ show e)
     sendPresence def sess
-    online <- newEmptyMVar
-
-    let shutdown :: IO ()
-        shutdown = do
-            rmLogger logger
-            sendPresence presenceOffline sess 
-            endSession sess
 
     -- If contact is offline, terminate!
-    forkIO $ do 
-        threadDelay 10000000     -- 10 seconds
-        isEmptyMVar online >>= 
-            flip when (shutdown >> exitImmediately (ExitFailure 1))
+    presence <- timeout 10000000 $ waitForPresence 
+        (\p -> fmap toBare (presenceFrom p) == Just contactJid) sess
 
-    presence <- waitForPresence (\p ->
-        fmap toBare (presenceFrom p) == Just contactJid) sess
-    when (presenceType presence == Available) $ do
-        putMVar online ()
+    when (fmap presenceType presence == Just Available) $ do
         withPostgresqlPool connStr (poolsize db) $ \pool ->
             flip runSqlPersistMPool pool $ runMigration migrateAll
 
@@ -232,4 +218,6 @@ main = do
                             let reply = simpleIM contactJid (pprFeed j {feedItemTitle = expanded})
                             void $ sendMessage reply sess 
         log "Twitter timeline sended."
-    shutdown
+    rmLogger logger
+    sendPresence presenceOffline sess 
+    endSession sess
