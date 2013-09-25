@@ -4,57 +4,47 @@ module Xmppbot.Twitter where
 import           Codec.Binary.UTF8.String (decodeString, encodeString)
 import           Control.Applicative ((<|>), many)
 import qualified Control.Exception as E
-import           Control.Monad (forM)
+import           Control.Monad (mapM)
 import           Data.Attoparsec.Char8
 import           Data.Attoparsec.Combinator (manyTill)
 import qualified Data.ByteString.Char8 as C
 import qualified Data.HashMap.Strict as HM
+import           Data.Maybe (fromMaybe)
 import           Network.HTTP.Conduit
 import           Network.HTTP.Types.Header (hLocation)
-import           Network.HTTP.Types.Status (status301, status302)
-
-isURI :: C.ByteString -> Bool
-isURI u = "http://" `C.isPrefixOf` u || "https://" `C.isPrefixOf` u
 
 expandShortUrl :: String -> IO String
 expandShortUrl tweet =
     case parseTweet tweet of
-        Right pieces' -> do
-            expanded <- forM pieces' $ \piece ->
-                if isURI piece then expand piece 
-                               else return piece
-            return $ unwords $ map (decodeString . C.unpack) expanded
+        Right pieces -> mapM expand pieces >>= merge
         Left err -> return tweet
   where
     parseTweet t = parseOnly tweetParser (C.pack $ encodeString t)
+    merge = return . unwords . map (decodeString . C.unpack)
 
 expand :: C.ByteString -> IO C.ByteString
-expand piece =
-    E.catch (do req <- parseUrl $ C.unpack piece
-                withManager $ \manager -> 
-                    httpLbs req { redirectCount = 0 } manager >> return piece)
-            (\e -> case e of
-                (StatusCodeException s hdr _) ->
-                    if s `elem` [status301, status302] then do
-                        uri <- redirect hdr 
-                        -- Sometimes, the location header has no host name!
-                        if isURI uri then expand uri else return piece
-                    else return piece
-                otherException -> print otherException >> return piece
-            )
+expand piece
+    | isURI piece = E.catch
+        (do req <- parseUrl $ C.unpack piece
+            withManager $ \manager -> 
+                httpLbs req { redirectCount = 0 } manager >> return piece)
+        (\e -> case e of
+            (StatusCodeException s hdr _) -> expand $ redirect hdr
+            otherException -> print otherException >> return piece
+        )
+    | otherwise = return piece
   where
-    redirect hdr = case HM.lookup hLocation $ HM.fromList hdr of 
-                        Just url -> return url
-                        Nothing  -> return piece
+    isURI u = "http://" `C.isPrefixOf` u || "https://" `C.isPrefixOf` u
+    redirect hdr = fromMaybe piece (HM.lookup hLocation $ HM.fromList hdr)
 
 uriParser :: C.ByteString -> Parser [C.ByteString]
 uriParser scheme = do
     v <- manyTill anyChar (try (string scheme))
-    link <- takeTill $ notInClass "0-9a-zA-z.:/-#?!"
+    link <- takeTill $ notInClass "0-9a-zA-z"
     return [C.pack v, C.append scheme link]
 
 tweetParser :: Parser [C.ByteString]
 tweetParser = do
-    piece <- many (uriParser "http://" <|> uriParser "https://")
+    piece <- many (uriParser "http://t.co/" <|> uriParser "https://t.co/")
     rest <- takeByteString
     return $ concat piece ++ [rest]
