@@ -11,7 +11,7 @@ import qualified Data.ByteString.Char8 as C
 import qualified Data.HashMap.Strict as HM
 import           Network.HTTP.Conduit
 import           Network.HTTP.Types.Header (hLocation)
-import           Network.HTTP.Types.Status (status301)
+import           Network.HTTP.Types.Status (status301, status302)
 
 isURI :: C.ByteString -> Bool
 isURI u = "http://" `C.isPrefixOf` u || "https://" `C.isPrefixOf` u
@@ -35,7 +35,7 @@ expand piece =
                     httpLbs req { redirectCount = 0 } manager >> return piece)
             (\e -> case e of
                 (StatusCodeException s hdr _) ->
-                    if s == status301 then do
+                    if s `elem` [status301, status302] then do
                         uri <- redirect hdr 
                         -- Sometimes, the location header has no host name!
                         if isURI uri then expand uri else return piece
@@ -50,7 +50,7 @@ expand piece =
 uriParser :: C.ByteString -> Parser [C.ByteString]
 uriParser scheme = do
     v <- manyTill anyChar (try (string scheme))
-    link <- takeTill $ notInClass "0-9a-zA-z.:/-"
+    link <- takeTill $ notInClass "0-9a-zA-z.:/-#?!"
     return [C.pack v, C.append scheme link]
 
 tweetParser :: Parser [C.ByteString]

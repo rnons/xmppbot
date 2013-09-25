@@ -198,15 +198,20 @@ main = do
                             Left (Entity _ _) -> liftIO $ return ()
                             Right _ -> liftIO $ modifyIORef msg (j:)
                     liftIO $ do
-                        log (name f ++ " fetched.")
                         toSend <- readIORef msg
-                        let reply = simpleIM contactJid (T.unlines $ map pprFeed toSend)
-                        void $ sendMessage reply sess 
+                        log (name f ++ " fetched: " ++ show (length toSend))
+                        let longMsg = T.unlines $ map pprFeed toSend
+                            payload = length $ T.unpack longMsg
+                        when (payload /= 0) $ do
+                            let header = simpleIM contactJid (T.pack $ name f ++ ": " ++ show payload)
+                            void $ sendMessage header sess 
+                            let reply = simpleIM contactJid longMsg
+                            void $ sendMessage reply sess 
                         log (name f ++ " sended.")
 
         -- Insert twitter status to DB if not exist
         status <- getTwitter twitter
-        log "Twitter timeline fetched."
+        log ("Twitter timeline fetched: " ++ show (length status))
         withPostgresqlPool connStr (poolsize db) $ \pool ->
             flip runSqlPersistMPool pool $
                 forM_ status $ \j -> do
