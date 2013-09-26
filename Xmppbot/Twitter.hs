@@ -12,6 +12,7 @@ import qualified Data.HashMap.Strict as HM
 import           Data.Maybe (fromMaybe)
 import           Network.HTTP.Conduit
 import           Network.HTTP.Types.Header (hLocation)
+import           Network.HTTP.Types.Status (status301, status302)
 
 expandShortUrl :: String -> IO String
 expandShortUrl tweet =
@@ -27,9 +28,12 @@ expand piece
     | isURI piece = E.catch
         (do req <- parseUrl $ C.unpack piece
             withManager $ \manager -> 
-                httpLbs req { redirectCount = 0 } manager >> return piece)
+                http req { redirectCount = 0 } manager >> return piece)
         (\e -> case e of
-            (StatusCodeException s hdr _) -> expand $ redirect hdr
+            (StatusCodeException s hdr _) -> 
+                if s `elem` [status301, status302]
+                    then expand (redirect hdr)
+                    else return piece
             otherException -> print otherException >> return piece
         )
     | otherwise = return piece
