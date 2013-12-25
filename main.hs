@@ -15,6 +15,7 @@ import           Data.Default (def)
 import qualified Data.HashMap.Strict as M
 import           Data.IORef
 import           Data.Maybe
+import           Data.Monoid ((<>))
 import           Data.Text (Text)
 import qualified Data.Text as T
 import           Data.Yaml
@@ -22,17 +23,17 @@ import           Database.Persist
 import           Database.Persist.Postgresql
 import           Database.Persist.TH
 import           GHC.Generics (Generic)
+import           GHC.IO.FD (openFile)
 import           Network.HTTP.Conduit (simpleHttp)
 import           Network.TLS ( Params(pConnectVersion, pAllowedVersions, pCiphers)
                              , Version(TLS10, TLS11, TLS12)
                              , defaultParamsClient )
 import           Network.TLS.Extra (ciphersuite_medium)
+import           Network.Wai.Logger (clockDateCacher)
 import           Network.Xmpp
 import           Network.Xmpp.IM (simpleIM)
-import           System.Exit (ExitCode(..))
-import           System.IO (openFile, IOMode(..))
+import           System.IO (IOMode(AppendMode))
 import           System.Log.FastLogger
-import           System.Posix.Process (exitImmediately)
 import           System.Timeout (timeout)
 import           Text.Feed.Import (parseFeedString)
 import qualified Text.Feed.Types as F
@@ -43,7 +44,7 @@ import           Web.Twitter.OAuth (Consumer(..), singleAccessToken)
 
 import Xmppbot.Twitter (expandShortUrl)
 
-data Database = Database 
+data Database = Database
     { user      :: String
     , password  :: String
     , host      :: String
@@ -97,7 +98,7 @@ getFeed feedsource = do
     result <- simpleHttp $ url feedsource
     let feed = parseFeedString $ LC.unpack result
     let items = case feed of
-                    Just f  -> fromMaybe [] $ 
+                    Just f  -> fromMaybe [] $
                                mapM (makeItem $ name feedsource) (feedItems f)
                     Nothing -> []
     return items
@@ -112,15 +113,15 @@ makeItem src item =
 
 pprFeed :: FeedItem -> Text
 pprFeed item = T.pack $
-    "[" ++ feedItemSource item ++ "]: " 
+    "[" ++ feedItemSource item ++ "]: "
         ++ feedItemTitle item ++ " " ++ feedItemLink item
 
 getTwitter :: Twitter -> IO [FeedItem]
 getTwitter s = do
     let consumer = Consumer (consumerKey s) (consumerSecret s)
-    tok <- singleAccessToken consumer (oauthToken s) (oauthTokenSecret s) 
+    tok <- singleAccessToken consumer (oauthToken s) (oauthTokenSecret s)
     st <- TT.homeTimeline tok []
-    return $ map makeStatus st 
+    return $ map makeStatus st
   where
     makeStatus st = FeedItem ('@' : TT.user st) (TT.text st) (TT.id_str st) ""
 
@@ -132,29 +133,27 @@ loadYaml fp = do
         Just obj -> return obj
 
 parseYaml :: FromJSON a => Text -> M.HashMap Text Value -> a
-parseYaml key hm =
-    case M.lookup key hm of
+parseYaml k hm =
+    case M.lookup k hm of
         Just val -> case fromJSON val of
                         Success s -> s
-                        Error err -> error $ "Falied to parse " 
-                                           ++ T.unpack key ++ ": " ++ show err
-        Nothing  -> error $ "Failed to load " ++ T.unpack key 
+                        Error err -> error $ "Falied to parse "
+                                           ++ T.unpack k ++ ": " ++ show err
+        Nothing  -> error $ "Failed to load " ++ T.unpack k
                                               ++ " from config file"
 
-writeLog :: Logger -> String -> IO ()
+writeLog :: LoggerSet -> String -> IO ()
 writeLog logger msg = do
-    date <- loggerDate logger
-    loggerPutStr logger
-        [ LB date
-        , LB " "
-        , LS msg
-        , LB "\n"
-        ]
-        
+    (loggerDate, _) <- clockDateCacher
+    now <- loggerDate
+    pushLogStr logger $
+        toLogStr now <> " " <> toLogStr msg <> "\n"
+
 main :: IO ()
 main = do
-    logger <- mkLogger True =<< openFile "bot.log" AppendMode
-    let log = writeLog logger
+    (fd, _) <- openFile "bot.log" AppendMode True
+    logger <- newLoggerSet defaultBufSize fd
+    let logI = writeLog logger
     config <- loadYaml "bot.yml"
     let db = parseYaml "Database" config :: Database
         account = parseYaml "Account" config :: Account
@@ -162,27 +161,27 @@ main = do
         feeds = parseYaml "Feeds" config :: [Feeds]
         contactJid = parseJid $ T.unpack $ contactUsername account
     connStr <- mkConnStr db
-    result <- 
+    result <-
         session "google.com"
-                (Just (const [plain (botUsername account) 
-                                    Nothing 
+                (Just (const [plain (botUsername account)
+                                    Nothing
                                     (botPassword account)], Nothing))
-                def { sessionStreamConfiguration = def 
-                        { tlsParams = defaultParamsClient 
+                def { sessionStreamConfiguration = def
+                        { tlsParams = defaultParamsClient
                             { pConnectVersion = TLS10
                             , pAllowedVersions = [TLS10, TLS11, TLS12]
                             , pCiphers = ciphersuite_medium } } }
     sess <- case result of
-                Right s -> log  "Session created." >> return s
-                Left e -> log "Session Failed." >> 
+                Right s -> logI  "Session created." >> return s
+                Left e -> logI "Session Failed." >>
                           error ("XmppFailure: " ++ show e)
     sendPresence def sess
 
     -- If contact is offline, terminate!
-    presence <- timeout 10000000 $ waitForPresence 
+    pres <- timeout 10000000 $ waitForPresence
         (\p -> fmap toBare (presenceFrom p) == Just contactJid) sess
 
-    when (fmap presenceType presence == Just Available) $ do
+    when (fmap presenceType pres == Just Available) $ do
         withPostgresqlPool connStr (poolsize db) $ \pool ->
             flip runSqlPersistMPool pool $ runMigration migrateAll
 
@@ -199,19 +198,19 @@ main = do
                             Right _ -> liftIO $ modifyIORef msg (j:)
                     liftIO $ do
                         toSend <- readIORef msg
-                        log (name f ++ " fetched: " ++ show (length toSend))
+                        logI (name f ++ " fetched: " ++ show (length toSend))
                         let longMsg = T.unlines $ map pprFeed toSend
                             payload = length $ T.unpack longMsg
                         when (payload /= 0) $ do
                             let header = simpleIM contactJid (T.pack $ name f ++ ": " ++ show payload)
-                            void $ sendMessage header sess 
+                            void $ sendMessage header sess
                             let reply = simpleIM contactJid longMsg
-                            void $ sendMessage reply sess 
-                        log (name f ++ " sended.")
+                            void $ sendMessage reply sess
+                        logI (name f ++ " sended.")
 
         -- Insert twitter status to DB if not exist
         status <- getTwitter twitter
-        log ("Twitter timeline fetched: " ++ show (length status))
+        logI ("Twitter timeline fetched: " ++ show (length status))
         withPostgresqlPool connStr (poolsize db) $ \pool ->
             flip runSqlPersistMPool pool $
                 forM_ status $ \j -> do
@@ -221,8 +220,8 @@ main = do
                         Right _ -> liftIO $ do
                             expanded <- expandShortUrl (feedItemTitle j)
                             let reply = simpleIM contactJid (pprFeed j {feedItemTitle = expanded})
-                            void $ sendMessage reply sess 
-        log "Twitter timeline sended."
-    rmLogger logger
-    sendPresence presenceOffline sess 
+                            void $ sendMessage reply sess
+        logI "Twitter timeline sended."
+    rmLoggerSet logger
+    sendPresence presenceOffline sess
     endSession sess
