@@ -32,6 +32,7 @@ import           Network.TLS.Extra (ciphersuite_medium)
 import           Network.Wai.Logger (clockDateCacher)
 import           Network.Xmpp
 import           Network.Xmpp.IM (simpleIM)
+import           System.Environment (getArgs)
 import           System.IO (IOMode(AppendMode))
 import           System.Log.FastLogger
 import           System.Timeout (timeout)
@@ -52,28 +53,26 @@ data Database = Database
     , database  :: String
     , poolsize  :: Int
     } deriving (Show, Generic)
+instance FromJSON Database
 
-data Account = Account
-    { botUsername       :: Text
-    , botPassword       :: Text
-    , contactUsername   :: Text
+data Bot = Bot
+    { xmppUsername       :: Text
+    , xmppPassword       :: Text
     } deriving (Show, Generic)
+instance FromJSON Bot
 
 data Twitter = Twitter
-    { consumerKey :: String
+    { consumerKey       :: String
     , consumerSecret    :: String
     , oauthToken        :: String
     , oauthTokenSecret  :: String
     } deriving (Show, Generic)
+instance FromJSON Twitter
 
 data Feeds = Feeds
     { name :: String
     , url  :: String
     } deriving (Show, Generic)
-
-instance FromJSON Database
-instance FromJSON Account
-instance FromJSON Twitter
 instance FromJSON Feeds
 
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
@@ -149,23 +148,43 @@ writeLog logger msg = do
     pushLogStr logger $
         toLogStr now <> " " <> toLogStr msg <> "\n"
 
+-- Xmppbot can be run in two modes:
+-- Interactive mode:
+--     When no args provided, run forever.
+-- Feed mode:
+--     Provide the name of config files, which contain contact and feed list.
+--     Fetch and send feeds, then exit.
 main :: IO ()
 main = do
+    config <- loadYaml "config/bot.yml"
+    let bot = parseYaml "Bot" config :: Bot
+
+    args <- getArgs
+    case args of
+        [] -> loop bot
+        xs -> mapM_ (handleFeed config) xs
+
+loop :: Bot -> IO ()
+loop bot = return ()
+
+handleFeed :: M.HashMap Text Value -> String -> IO ()
+handleFeed config list = do
     (fd, _) <- openFile "bot.log" AppendMode True
     logger <- newLoggerSet defaultBufSize fd
     let logI = writeLog logger
-    config <- loadYaml "bot.yml"
     let db = parseYaml "Database" config :: Database
-        account = parseYaml "Account" config :: Account
+        bot = parseYaml "Bot" config :: Bot
         twitter = parseYaml "Twitter" config :: Twitter
-        feeds = parseYaml "Feeds" config :: [Feeds]
-        contactJid = parseJid $ T.unpack $ contactUsername account
+    feedList <- loadYaml list
+    let feeds = parseYaml "Feeds" feedList :: [Feeds]
+        contact = parseYaml "Contact" config :: String
+        contactJid = parseJid contact
     connStr <- mkConnStr db
     result <-
         session "google.com"
-                (Just (const [plain (botUsername account)
+                (Just (const [plain (xmppUsername bot)
                                     Nothing
-                                    (botPassword account)], Nothing))
+                                    (xmppPassword bot)], Nothing))
                 def { sessionStreamConfiguration = def
                         { tlsParams = defaultParamsClient
                             { pConnectVersion = TLS10

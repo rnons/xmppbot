@@ -1,0 +1,6 @@
+Contact: localpart@domainpart/resourcepart
+Feeds:
+    - name: Planet Haskell
+      url: http://planet.haskell.org/rss20.xml
+    - name: Hackage
+      url: http://hackage.haskell.org/packages/archive/recent.rss

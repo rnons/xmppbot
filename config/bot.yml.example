@@ -1,0 +1,15 @@
+Database:
+    user: postgres
+    password: postgres
+    host: localhost
+    port: 5432
+    database: postgres
+    poolsize: 10
+Bot:
+    xmppUsername: localpart@domainpart/resourcepart
+    xmppPassword: password
+Twitter:
+    consumerKey: consumer_key
+    consumerSecret: consumer_secret
+    oauthToken: access_token
+    oauthTokenSecret: access_token_secret
