@@ -81,7 +81,8 @@ FeedItem
     title String
     date  String
     link  String
-    UniqueItem title date
+    contact String
+    UniqueItem title date contact
     deriving Show
 |]
 
@@ -92,37 +93,38 @@ mkConnStr s = return $ C.pack $ "host=" ++ host s ++
                                 " password=" ++ password s ++
                                 " port=" ++ show (port s)
 
-getFeed :: Feeds -> IO [FeedItem]
-getFeed feedsource = do
+getFeed :: String -> Feeds -> IO [FeedItem]
+getFeed contact feedsource = do
     result <- simpleHttp $ url feedsource
     let feed = parseFeedString $ LC.unpack result
     let items = case feed of
                     Just f  -> fromMaybe [] $
-                               mapM (makeItem $ name feedsource) (feedItems f)
+                               mapM (makeItem contact $ name feedsource) (feedItems f)
                     Nothing -> []
     return items
 
 -- | Make an item from a feed item.
-makeItem :: String -> F.Item -> Maybe FeedItem
-makeItem src item =
+makeItem :: String -> String -> F.Item -> Maybe FeedItem
+makeItem contact src item =
     FeedItem <$> Just src
              <*> getItemTitle item
              <*> getItemPublishDate item
              <*> getItemLink item
+             <*> Just contact
 
 pprFeed :: FeedItem -> Text
 pprFeed item = T.pack $
     "[" ++ feedItemSource item ++ "]: "
         ++ feedItemTitle item ++ " " ++ feedItemLink item
 
-getTwitter :: Twitter -> IO [FeedItem]
-getTwitter s = do
+getTwitter :: String -> Twitter -> IO [FeedItem]
+getTwitter contact s = do
     let consumer = Consumer (consumerKey s) (consumerSecret s)
     tok <- singleAccessToken consumer (oauthToken s) (oauthTokenSecret s)
     st <- TT.homeTimeline tok []
     return $ map makeStatus st
   where
-    makeStatus st = FeedItem ('@' : TT.user st) (TT.text st) (TT.id_str st) ""
+    makeStatus st = FeedItem ('@' : TT.user st) (TT.text st) (TT.id_str st) "" contact
 
 loadYaml :: String -> IO (M.HashMap Text Value)
 loadYaml fp = do
@@ -206,7 +208,7 @@ handleFeed config list = do
 
         -- Insert feeds to DB if not exist and send to contact
         forM_ feeds $ \f -> do
-            items <- getFeed f
+            items <- getFeed contact f
             msg <- newIORef [] :: IO (IORef [FeedItem])
             withPostgresqlPool connStr (poolsize db) $ \pool ->
                 flip runSqlPersistMPool pool $ do
@@ -228,7 +230,7 @@ handleFeed config list = do
                         logI (name f ++ " sended.")
 
         -- Insert twitter status to DB if not exist
-        status <- getTwitter twitter
+        status <- getTwitter contact twitter
         logI ("Twitter timeline fetched: " ++ show (length status))
         withPostgresqlPool connStr (poolsize db) $ \pool ->
             flip runSqlPersistMPool pool $
