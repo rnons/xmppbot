@@ -6,7 +6,7 @@
 {-# LANGUAGE TemplateHaskell   #-}
 {-# LANGUAGE TypeFamilies      #-}
 import           Control.Applicative ((<$>), (<*>))
-import           Control.Monad (forM_, void, when)
+import           Control.Monad (forever, forM, forM_, void, when)
 import           Control.Monad.IO.Class  (liftIO)
 import           Data.Aeson (Result(..), fromJSON)
 import qualified Data.ByteString.Char8 as C
@@ -31,7 +31,7 @@ import           Network.TLS ( Params(pConnectVersion, pAllowedVersions, pCipher
 import           Network.TLS.Extra (ciphersuite_medium)
 import           Network.Wai.Logger (clockDateCacher)
 import           Network.Xmpp
-import           Network.Xmpp.IM (simpleIM)
+import           Network.Xmpp.IM
 import           System.Environment (getArgs)
 import           System.IO (IOMode(AppendMode))
 import           System.Log.FastLogger
@@ -43,6 +43,7 @@ import           Text.Feed.Query ( feedItems, getItemTitle
 import qualified Web.Twitter as TT
 import           Web.Twitter.OAuth (Consumer(..), singleAccessToken)
 
+import Xmppbot.Translate (translate)
 import Xmppbot.Twitter (expandShortUrl)
 
 data Database = Database
@@ -97,11 +98,10 @@ getFeed :: String -> Feeds -> IO [FeedItem]
 getFeed contact feedsource = do
     result <- simpleHttp $ url feedsource
     let feed = parseFeedString $ LC.unpack result
-    let items = case feed of
-                    Just f  -> fromMaybe [] $
-                               mapM (makeItem contact $ name feedsource) (feedItems f)
-                    Nothing -> []
-    return items
+    case feed of
+        Just f  -> return $ fromMaybe [] $
+                   mapM (makeItem contact $ name feedsource) (feedItems f)
+        Nothing -> return []
 
 -- | Make an item from a feed item.
 makeItem :: String -> String -> F.Item -> Maybe FeedItem
@@ -167,7 +167,31 @@ main = do
         xs -> mapM_ (handleFeed config) xs
 
 loop :: Bot -> IO ()
-loop bot = return ()
+loop bot = do
+    result <-
+        session "google.com"
+                (Just (const [plain (xmppUsername bot)
+                                    Nothing
+                                    (xmppPassword bot)], Nothing))
+                def { sessionStreamConfiguration = def
+                        { tlsParams = defaultParamsClient
+                            { pConnectVersion = TLS10
+                            , pAllowedVersions = [TLS10, TLS11, TLS12]
+                            , pCiphers = ciphersuite_medium } } }
+    sess <- case result of
+                Right s -> putStrLn "Session created." >> return s
+                Left e -> putStrLn "Session Failed." >>
+                          error ("XmppFailure: " ++ show e)
+    sendPresence def sess
+
+    forever $ do
+        msg <- getMessage sess
+        tr <- forM (imBody $ fromJust $ getIM msg) $ \m ->
+            translate $ T.unpack $ bodyContent m
+        let body = map (MessageBody Nothing . T.pack) tr
+        case answerIM body msg of
+            Just answer -> void $ sendMessage answer sess
+            Nothing -> putStrLn "Received message with no sender."
 
 handleFeed :: M.HashMap Text Value -> String -> IO ()
 handleFeed config list = do
@@ -208,11 +232,11 @@ handleFeed config list = do
 
         -- Insert feeds to DB if not exist and send to contact
         forM_ feeds $ \f -> do
-            items <- getFeed contact f
+            entries <- getFeed contact f
             msg <- newIORef [] :: IO (IORef [FeedItem])
             withPostgresqlPool connStr (poolsize db) $ \pool ->
                 flip runSqlPersistMPool pool $ do
-                    forM_ items $ \j -> do
+                    forM_ entries $ \j -> do
                         ent <- insertBy j
                         case ent of
                             Left (Entity _ _) -> liftIO $ return ()
@@ -230,11 +254,11 @@ handleFeed config list = do
                         logI (name f ++ " sended.")
 
         -- Insert twitter status to DB if not exist
-        status <- getTwitter contact twitter
-        logI ("Twitter timeline fetched: " ++ show (length status))
+        tweets <- getTwitter contact twitter
+        logI ("Twitter timeline fetched: " ++ show (length tweets))
         withPostgresqlPool connStr (poolsize db) $ \pool ->
             flip runSqlPersistMPool pool $
-                forM_ status $ \j -> do
+                forM_ tweets $ \j -> do
                     ent <- insertBy j
                     case ent of
                         Left (Entity _ _) -> liftIO $ return ()
