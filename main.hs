@@ -1,12 +1,11 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 import           Control.Monad (forever, forM, forM_, void, when)
-import           Control.Monad.IO.Class  (liftIO)
 import           Data.Aeson (Result(..), fromJSON)
 import qualified Data.ByteString.Char8 as C
 import           Data.Default (def)
+import           Data.Either (rights)
 import qualified Data.HashMap.Strict as M
-import           Data.IORef
 import           Data.Maybe
 import           Data.Monoid ((<>))
 import           Data.Text (Text)
@@ -50,12 +49,12 @@ data Bot = Bot
     } deriving (Show, Generic)
 instance FromJSON Bot
 
-mkConnStr :: Database -> IO C.ByteString
-mkConnStr s = return $ C.pack $ "host=" ++ host s ++
-                                " dbname=" ++ database s ++
-                                " user=" ++ user s ++
-                                " password=" ++ password s ++
-                                " port=" ++ show (port s)
+mkConnStr :: Database -> C.ByteString
+mkConnStr s = C.pack $ "host=" ++ host s ++
+                       " dbname=" ++ database s ++
+                       " user=" ++ user s ++
+                       " password=" ++ password s ++
+                       " port=" ++ show (port s)
 
 loadYaml :: String -> IO (M.HashMap Text Value)
 loadYaml fp = do
@@ -137,7 +136,6 @@ handleFeed config list = do
         twitterUsers = parseYaml "TwitterUser" feedList :: [String]
         contact = parseYaml "Contact" config :: String
         contactJid = parseJid contact
-    connStr <- mkConnStr db
     result <-
         session "google.com"
                 (Just (const [plain (xmppUsername bot)
@@ -159,49 +157,44 @@ handleFeed config list = do
         (\p -> fmap toBare (presenceFrom p) == Just contactJid) sess
 
     when (fmap presenceType pres == Just Available) $ do
-        withPostgresqlPool connStr (poolsize db) $ \pool ->
-            flip runSqlPersistMPool pool $ runMigration migrateAll
+        pool <- createPostgresqlPool (mkConnStr db) (poolsize db)
+        flip runSqlPersistMPool pool $ runMigration migrateAll
 
         -- Insert feeds to DB if not exist and send to contact
         forM_ feeds $ \f -> do
             entries <- getFeed contact f
-            msg <- newIORef [] :: IO (IORef [FeedItem])
-            withPostgresqlPool connStr (poolsize db) $ \pool ->
-                flip runSqlPersistMPool pool $ do
-                    forM_ entries $ \j -> do
-                        ent <- insertBy j
-                        case ent of
-                            Left (Entity _ _) -> liftIO $ return ()
-                            Right _ -> liftIO $ modifyIORef msg (j:)
-                    liftIO $ do
-                        toSend <- readIORef msg
-                        logI (name f ++ " fetched: " ++ show (length toSend))
-                        let longMsg = T.unlines $ map pprFeed toSend
-                            payload = length $ T.unpack longMsg
-                        when (payload /= 0) $ do
-                            let header = simpleIM contactJid (T.pack $ name f ++ ": " ++ show payload)
-                            void $ sendMessage header sess
-                            let reply = simpleIM contactJid longMsg
-                            void $ sendMessage reply sess
-                        logI (name f ++ " sended.")
+            send entries pool sess contact False
 
         -- Insert twitter status to DB if not exist
         let consumer = Consumer (consumerKey tk) (consumerSecret tk)
         tok <- singleAccessToken consumer (oauthToken tk) (oauthTokenSecret tk)
-        ts <- forM twitterUsers $ \u -> getUserTL tok u contact
+        forM_ twitterUsers $ \u -> do
+            entries <- getUserTL tok u contact
+            send entries pool sess contact True
         tweets <- getHomeTL tok contact
-        logI ("Twitter timeline fetched: " ++ show (length tweets))
-        withPostgresqlPool connStr (poolsize db) $ \pool ->
-            flip runSqlPersistMPool pool $
-                forM_ (concat ts ++ tweets) $ \j -> do
-                    ent <- insertBy j
-                    case ent of
-                        Left (Entity _ _) -> liftIO $ return ()
-                        Right _ -> liftIO $ do
-                            expanded <- expandShortUrl (feedItemTitle j)
-                            let reply = simpleIM contactJid (pprFeed j {feedItemTitle = expanded})
-                            void $ sendMessage reply sess
-        logI "Twitter timeline sended."
+        send tweets pool sess contact True
+
     rmLoggerSet logger
     sendPresence presenceOffline sess
     endSession sess
+
+send :: [FeedItem] -> ConnectionPool -> Session -> String -> Bool -> IO ()
+send entries pool sess contact isTwitter = do
+    let contactJid = parseJid contact
+    toSend <- fmap rights $ forM entries $ \e ->
+        flip runSqlPersistMPool pool $ do
+            ent <- insertBy e
+            case ent of
+                Left (Entity _ _) -> return $ Left False
+                Right _ -> return $ Right e
+    longMsg <- if isTwitter
+                   then do
+                       msg <- forM toSend $ \s -> do
+                           expanded <- expandShortUrl (feedItemTitle s)
+                           return $ s { feedItemTitle = expanded }
+                       return $ T.unlines $ map pprFeed msg
+                   else return $ T.unlines $ map pprFeed toSend
+    let payload = length $ T.unpack longMsg
+    when (payload /= 0) $ do
+        let reply = simpleIM contactJid longMsg
+        void $ sendMessage reply sess

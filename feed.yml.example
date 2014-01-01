@@ -7,3 +7,6 @@ Feeds:
 TwitterUser:
     - newsycombinator
     - reddit_haskell
+Greetings:
+    - "Hello"
+    - "Hi"
