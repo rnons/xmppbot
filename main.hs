@@ -1,16 +1,9 @@
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE FlexibleContexts  #-}
-{-# LANGUAGE GADTs             #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes       #-}
-{-# LANGUAGE TemplateHaskell   #-}
-{-# LANGUAGE TypeFamilies      #-}
-import           Control.Applicative ((<$>), (<*>))
 import           Control.Monad (forever, forM, forM_, void, when)
 import           Control.Monad.IO.Class  (liftIO)
 import           Data.Aeson (Result(..), fromJSON)
 import qualified Data.ByteString.Char8 as C
-import qualified Data.ByteString.Lazy.Char8 as LC
 import           Data.Default (def)
 import qualified Data.HashMap.Strict as M
 import           Data.IORef
@@ -21,10 +14,8 @@ import qualified Data.Text as T
 import           Data.Yaml
 import           Database.Persist
 import           Database.Persist.Postgresql
-import           Database.Persist.TH
 import           GHC.Generics (Generic)
 import           GHC.IO.FD (openFile)
-import           Network.HTTP.Conduit (simpleHttp)
 import           Network.TLS ( Params(pConnectVersion, pAllowedVersions, pCiphers)
                              , Version(TLS10, TLS11, TLS12)
                              , defaultParamsClient )
@@ -36,13 +27,9 @@ import           System.Environment (getArgs)
 import           System.IO (IOMode(AppendMode))
 import           System.Log.FastLogger
 import           System.Timeout (timeout)
-import           Text.Feed.Import (parseFeedString)
-import qualified Text.Feed.Types as F
-import           Text.Feed.Query ( feedItems, getItemTitle
-                                 , getItemPublishDate, getItemLink)
-import qualified Web.Twitter as TT
-import           Web.Twitter.OAuth (Consumer(..), singleAccessToken)
 
+import Model
+import Xmppbot.Feed
 import Xmppbot.Translate (translate)
 import Xmppbot.Twitter (expandShortUrl)
 
@@ -62,69 +49,12 @@ data Bot = Bot
     } deriving (Show, Generic)
 instance FromJSON Bot
 
-data Twitter = Twitter
-    { consumerKey       :: String
-    , consumerSecret    :: String
-    , oauthToken        :: String
-    , oauthTokenSecret  :: String
-    } deriving (Show, Generic)
-instance FromJSON Twitter
-
-data Feeds = Feeds
-    { name :: String
-    , url  :: String
-    } deriving (Show, Generic)
-instance FromJSON Feeds
-
-share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
-FeedItem
-    source String
-    title String
-    date  String
-    link  String
-    contact String
-    UniqueItem title date contact
-    deriving Show
-|]
-
 mkConnStr :: Database -> IO C.ByteString
 mkConnStr s = return $ C.pack $ "host=" ++ host s ++
                                 " dbname=" ++ database s ++
                                 " user=" ++ user s ++
                                 " password=" ++ password s ++
                                 " port=" ++ show (port s)
-
-getFeed :: String -> Feeds -> IO [FeedItem]
-getFeed contact feedsource = do
-    result <- simpleHttp $ url feedsource
-    let feed = parseFeedString $ LC.unpack result
-    case feed of
-        Just f  -> return $ fromMaybe [] $
-                   mapM (makeItem contact $ name feedsource) (feedItems f)
-        Nothing -> return []
-
--- | Make an item from a feed item.
-makeItem :: String -> String -> F.Item -> Maybe FeedItem
-makeItem contact src item =
-    FeedItem <$> Just src
-             <*> getItemTitle item
-             <*> getItemPublishDate item
-             <*> getItemLink item
-             <*> Just contact
-
-pprFeed :: FeedItem -> Text
-pprFeed item = T.pack $
-    "[" ++ feedItemSource item ++ "]: "
-        ++ feedItemTitle item ++ " " ++ feedItemLink item
-
-getTwitter :: String -> Twitter -> IO [FeedItem]
-getTwitter contact s = do
-    let consumer = Consumer (consumerKey s) (consumerSecret s)
-    tok <- singleAccessToken consumer (oauthToken s) (oauthTokenSecret s)
-    st <- TT.homeTimeline tok []
-    return $ map makeStatus st
-  where
-    makeStatus st = FeedItem ('@' : TT.user st) (TT.text st) (TT.id_str st) "" contact
 
 loadYaml :: String -> IO (M.HashMap Text Value)
 loadYaml fp = do
