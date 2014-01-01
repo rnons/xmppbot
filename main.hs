@@ -136,7 +136,7 @@ handleFeed config list = do
     let feeds = parseYaml "Feeds" feedList :: [Feeds]
         twitterUsers = parseYaml "TwitterUser" feedList :: [String]
         greetings = parseYaml "Greetings" feedList :: [Text]
-        contact = parseYaml "Contact" config :: String
+        contact = parseYaml "Contact" feedList :: String
         contactJid = parseJid contact
     result <-
         session "google.com"
@@ -158,9 +158,10 @@ handleFeed config list = do
     pres <- timeout 10000000 $ waitForPresence
         (\p -> fmap toBare (presenceFrom p) == Just contactJid) sess
 
-    msg <- pick greetings
-    let msgC = simpleIM contactJid msg
-    sendMessage msgC sess
+    when (not $ null greetings) $ do
+        msg <- pick greetings
+        let msgC = simpleIM contactJid msg
+        void $ sendMessage msgC sess
 
     when (fmap presenceType pres == Just Available) $ do
         pool <- createPostgresqlPool (mkConnStr db) (poolsize db)
