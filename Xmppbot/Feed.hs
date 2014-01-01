@@ -9,12 +9,12 @@ import           Data.Text (Text)
 import qualified Data.Text as T
 import           GHC.Generics (Generic)
 import           Network.HTTP.Conduit (simpleHttp)
+import           Network.OAuth.Consumer (Token)
 import           Text.Feed.Import (parseFeedString)
 import qualified Text.Feed.Types as F
 import           Text.Feed.Query ( feedItems, getItemTitle
                                  , getItemPublishDate, getItemLink)
 import qualified Web.Twitter as TT
-import           Web.Twitter.OAuth (Consumer(..), singleAccessToken)
 import Model
 
 data Twitter = Twitter
@@ -54,12 +54,16 @@ pprFeed item = T.pack $
     "[" ++ feedItemSource item ++ "]: "
         ++ feedItemTitle item ++ " " ++ feedItemLink item
 
-getTwitter :: String -> Twitter -> IO [FeedItem]
-getTwitter contact s = do
-    let consumer = Consumer (consumerKey s) (consumerSecret s)
-    tok <- singleAccessToken consumer (oauthToken s) (oauthTokenSecret s)
+makeStatus :: String -> TT.Status -> FeedItem
+makeStatus contact st = FeedItem ('@' : TT.user st) (TT.text st) (TT.id_str st) "" contact
+
+getHomeTL :: Token -> String -> IO [FeedItem]
+getHomeTL tok contact = do
     st <- TT.homeTimeline tok []
-    return $ map makeStatus st
-  where
-    makeStatus st = FeedItem ('@' : TT.user st) (TT.text st) (TT.id_str st) "" contact
+    return $ map (makeStatus contact) st
+
+getUserTL :: Token -> String -> String -> IO [FeedItem]
+getUserTL tok uname contact = do
+    st <- TT.authUserTimeline tok uname []
+    return $ map (makeStatus contact) st
 

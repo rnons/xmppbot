@@ -27,6 +27,7 @@ import           System.Environment (getArgs)
 import           System.IO (IOMode(AppendMode))
 import           System.Log.FastLogger
 import           System.Timeout (timeout)
+import           Web.Twitter.OAuth (Consumer(..), singleAccessToken)
 
 import Model
 import Xmppbot.Feed
@@ -130,9 +131,10 @@ handleFeed config list = do
     let logI = writeLog logger
     let db = parseYaml "Database" config :: Database
         bot = parseYaml "Bot" config :: Bot
-        twitter = parseYaml "Twitter" config :: Twitter
+        tk = parseYaml "Twitter" config :: Twitter
     feedList <- loadYaml list
     let feeds = parseYaml "Feeds" feedList :: [Feeds]
+        twitterUsers = parseYaml "TwitterUser" feedList :: [String]
         contact = parseYaml "Contact" config :: String
         contactJid = parseJid contact
     connStr <- mkConnStr db
@@ -184,11 +186,14 @@ handleFeed config list = do
                         logI (name f ++ " sended.")
 
         -- Insert twitter status to DB if not exist
-        tweets <- getTwitter contact twitter
+        let consumer = Consumer (consumerKey tk) (consumerSecret tk)
+        tok <- singleAccessToken consumer (oauthToken tk) (oauthTokenSecret tk)
+        ts <- forM twitterUsers $ \u -> getUserTL tok u contact
+        tweets <- getHomeTL tok contact
         logI ("Twitter timeline fetched: " ++ show (length tweets))
         withPostgresqlPool connStr (poolsize db) $ \pool ->
             flip runSqlPersistMPool pool $
-                forM_ tweets $ \j -> do
+                forM_ (concat ts ++ tweets) $ \j -> do
                     ent <- insertBy j
                     case ent of
                         Left (Entity _ _) -> liftIO $ return ()
