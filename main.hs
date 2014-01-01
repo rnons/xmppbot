@@ -30,6 +30,7 @@ import           Web.Twitter.OAuth (Consumer(..), singleAccessToken)
 
 import Model
 import Xmppbot.Feed
+import Xmppbot.Greeting
 import Xmppbot.Translate (translate)
 import Xmppbot.Twitter (expandShortUrl)
 
@@ -134,6 +135,7 @@ handleFeed config list = do
     feedList <- loadYaml list
     let feeds = parseYaml "Feeds" feedList :: [Feeds]
         twitterUsers = parseYaml "TwitterUser" feedList :: [String]
+        greetings = parseYaml "Greetings" feedList :: [Text]
         contact = parseYaml "Contact" config :: String
         contactJid = parseJid contact
     result <-
@@ -155,6 +157,10 @@ handleFeed config list = do
     -- If contact is offline, terminate!
     pres <- timeout 10000000 $ waitForPresence
         (\p -> fmap toBare (presenceFrom p) == Just contactJid) sess
+
+    msg <- pick greetings
+    let msgC = simpleIM contactJid msg
+    sendMessage msgC sess
 
     when (fmap presenceType pres == Just Available) $ do
         pool <- createPostgresqlPool (mkConnStr db) (poolsize db)
