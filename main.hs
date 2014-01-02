@@ -73,15 +73,20 @@ writeLog logger msg = do
 main :: IO ()
 main = do
     config <- load "config/bot.yml"
-    bot <- lookup "Bot" config
 
     args <- getArgs
+    sess <- newSession config
+    sendPresence def sess
     case args of
-        [] -> loop bot
-        xs -> mapM_ (handleFeed config) xs
+        [] -> loop sess
+        xs -> mapM_ (handleFeed config sess) xs
 
-loop :: Bot -> IO ()
-loop bot = do
+    sendPresence presenceOffline sess
+    endSession sess
+
+newSession :: Config -> IO Session
+newSession config = do
+    bot <- lookup "Bot" config
     result <-
         session "google.com"
                 (Just (const [plain (xmppUsername bot)
@@ -92,13 +97,13 @@ loop bot = do
                             { pConnectVersion = TLS10
                             , pAllowedVersions = [TLS10, TLS11, TLS12]
                             , pCiphers = ciphersuite_medium } } }
-    sess <- case result of
-                Right s -> putStrLn "Session created." >> return s
-                Left e -> putStrLn "Session Failed." >>
-                          error ("XmppFailure: " ++ show e)
-    sendPresence def sess
+    case result of
+        Right s -> putStrLn "Session created." >> return s
+        Left e  -> putStrLn "Session Failed." >>
+                   error ("XmppFailure: " ++ show e)
 
-    forever $ do
+loop :: Session -> IO ()
+loop sess = forever $ do
         msg <- getMessage sess
         tr <- forM (imBody $ fromJust $ getIM msg) $ \m ->
             translate $ T.unpack $ bodyContent m
@@ -107,13 +112,11 @@ loop bot = do
             Just answer -> void $ sendMessage answer sess
             Nothing -> putStrLn "Received message with no sender."
 
-handleFeed :: Config -> String -> IO ()
-handleFeed config list = do
+handleFeed :: Config -> Session -> String -> IO ()
+handleFeed config sess list = do
     (fd, _) <- openFile "bot.log" AppendMode True
     logger <- newLoggerSet defaultBufSize fd
-    let logI = writeLog logger
     db <- lookup "Database" config
-    bot<- lookup "Bot" config
     tk <- lookup "Twitter" config
     feedList <- load list
     contact <- lookup "Contact" feedList
@@ -122,21 +125,6 @@ handleFeed config list = do
         greetings = lookupDefault "Greetings" [] feedList
         homeTL = lookupDefault "HomeTL" False feedList
         contactJid = parseJid contact
-    result <-
-        session "google.com"
-                (Just (const [plain (xmppUsername bot)
-                                    Nothing
-                                    (xmppPassword bot)], Nothing))
-                def { sessionStreamConfiguration = def
-                        { tlsParams = defaultParamsClient
-                            { pConnectVersion = TLS10
-                            , pAllowedVersions = [TLS10, TLS11, TLS12]
-                            , pCiphers = ciphersuite_medium } } }
-    sess <- case result of
-                Right s -> logI  "Session created." >> return s
-                Left e -> logI "Session Failed." >>
-                          error ("XmppFailure: " ++ show e)
-    sendPresence def sess
 
     -- If contact is offline, terminate!
     pres <- timeout 10000000 $ waitForPresence
@@ -167,8 +155,6 @@ handleFeed config list = do
             send tweets pool sess contact True
 
     rmLoggerSet logger
-    sendPresence presenceOffline sess
-    endSession sess
 
 send :: [FeedItem] -> ConnectionPool -> Session -> String -> Bool -> IO ()
 send entries pool sess contact isTwitter = do
