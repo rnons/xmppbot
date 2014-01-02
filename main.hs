@@ -1,16 +1,15 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 import           Control.Monad (forever, forM, forM_, void, when)
-import           Data.Aeson (Result(..), fromJSON)
+import           Data.Aeson (FromJSON)
 import qualified Data.ByteString.Char8 as C
 import           Data.Default (def)
 import           Data.Either (rights)
-import qualified Data.HashMap.Strict as M
 import           Data.Maybe
 import           Data.Monoid ((<>))
 import           Data.Text (Text)
 import qualified Data.Text as T
-import           Data.Yaml
+import           Data.Yaml.Config
 import           Database.Persist
 import           Database.Persist.Postgresql
 import           GHC.Generics (Generic)
@@ -22,6 +21,7 @@ import           Network.TLS.Extra (ciphersuite_medium)
 import           Network.Wai.Logger (clockDateCacher)
 import           Network.Xmpp
 import           Network.Xmpp.IM
+import           Prelude hiding (lookup)
 import           System.Environment (getArgs)
 import           System.IO (IOMode(AppendMode))
 import           System.Log.FastLogger
@@ -57,23 +57,6 @@ mkConnStr s = C.pack $ "host=" ++ host s ++
                        " password=" ++ password s ++
                        " port=" ++ show (port s)
 
-loadYaml :: String -> IO (M.HashMap Text Value)
-loadYaml fp = do
-    mval <- decodeFile fp
-    case mval of
-        Nothing  -> error $ "Invalid YAML file: " ++ show fp
-        Just obj -> return obj
-
-parseYaml :: FromJSON a => Text -> M.HashMap Text Value -> a
-parseYaml k hm =
-    case M.lookup k hm of
-        Just val -> case fromJSON val of
-                        Success s -> s
-                        Error err -> error $ "Falied to parse "
-                                           ++ T.unpack k ++ ": " ++ show err
-        Nothing  -> error $ "Failed to load " ++ T.unpack k
-                                              ++ " from config file"
-
 writeLog :: LoggerSet -> String -> IO ()
 writeLog logger msg = do
     (loggerDate, _) <- clockDateCacher
@@ -89,8 +72,8 @@ writeLog logger msg = do
 --     Fetch and send feeds, then exit.
 main :: IO ()
 main = do
-    config <- loadYaml "config/bot.yml"
-    let bot = parseYaml "Bot" config :: Bot
+    config <- load "config/bot.yml"
+    bot <- lookup "Bot" config
 
     args <- getArgs
     case args of
@@ -124,19 +107,19 @@ loop bot = do
             Just answer -> void $ sendMessage answer sess
             Nothing -> putStrLn "Received message with no sender."
 
-handleFeed :: M.HashMap Text Value -> String -> IO ()
+handleFeed :: Config -> String -> IO ()
 handleFeed config list = do
     (fd, _) <- openFile "bot.log" AppendMode True
     logger <- newLoggerSet defaultBufSize fd
     let logI = writeLog logger
-    let db = parseYaml "Database" config :: Database
-        bot = parseYaml "Bot" config :: Bot
-        tk = parseYaml "Twitter" config :: Twitter
-    feedList <- loadYaml list
-    let feeds = parseYaml "Feeds" feedList :: [Feeds]
-        twitterUsers = parseYaml "TwitterUser" feedList :: [String]
-        greetings = parseYaml "Greetings" feedList :: [Text]
-        contact = parseYaml "Contact" feedList :: String
+    db <- lookup "Database" config
+    bot<- lookup "Bot" config
+    tk <- lookup "Twitter" config
+    feedList <- load list
+    contact <- lookup "Contact" feedList
+    let feeds = lookupDefault "Feeds" [] feedList
+        twitterUsers = lookupDefault "TwitterUser" [] feedList
+        greetings = lookupDefault "Greetings" [] feedList
         contactJid = parseJid contact
     result <-
         session "google.com"
