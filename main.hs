@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
-import           Control.Monad (forever, forM, forM_, void, when)
+import           Control.Monad (forever, forM, forM_, void, when, unless)
 import           Data.Aeson (FromJSON)
 import qualified Data.ByteString.Char8 as C
 import           Data.Default (def)
@@ -120,6 +120,7 @@ handleFeed config list = do
     let feeds = lookupDefault "Feeds" [] feedList
         twitterUsers = lookupDefault "TwitterUser" [] feedList
         greetings = lookupDefault "Greetings" [] feedList
+        homeTL = lookupDefault "HomeTL" False feedList
         contactJid = parseJid contact
     result <-
         session "google.com"
@@ -141,7 +142,7 @@ handleFeed config list = do
     pres <- timeout 10000000 $ waitForPresence
         (\p -> fmap toBare (presenceFrom p) == Just contactJid) sess
 
-    when (not $ null greetings) $ do
+    unless (null greetings) $ do
         msg <- pick greetings
         let msgC = simpleIM contactJid msg
         void $ sendMessage msgC sess
@@ -161,8 +162,9 @@ handleFeed config list = do
         forM_ twitterUsers $ \u -> do
             entries <- getUserTL tok u contact
             send entries pool sess contact True
-        tweets <- getHomeTL tok contact
-        send tweets pool sess contact True
+        when homeTL $ do
+            tweets <- getHomeTL tok contact
+            send tweets pool sess contact True
 
     rmLoggerSet logger
     sendPresence presenceOffline sess
