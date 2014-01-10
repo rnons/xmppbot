@@ -9,8 +9,8 @@ import qualified Data.ByteString as B
 import           Network.HTTP.Types
 import           Network.HTTP.Conduit
 
-translate :: String -> IO String
-translate q = do
+translate :: Manager -> String -> IO String
+translate manager q = do
     let url = "http://translate.google.com/translate_a/t"
         query = [ ("client", "t")
                 , ("sl", "auto")
@@ -26,18 +26,14 @@ translate q = do
                 ]
     initReq <- parseUrl url
     let req = initReq { queryString = renderSimpleQuery False query}
-    res <- withManager $ \manager -> httpLbs req manager
+    res <- httpLbs req manager
     case eitherResult $ parse trParser (responseBody res) of
         Right p -> return $ toString p
         Left err -> error err
 
---trParser :: Parser [B.ByteString, B.ByteString, B.ByteString]
 trParser :: Parser B.ByteString
 trParser = do
-    string "[[["
-    piece <- takeTill $ inClass ","
+    string "[[[\""
+    piece <- takeTill $ inClass "\""
     takeLazyByteString
     return piece
-
-
-

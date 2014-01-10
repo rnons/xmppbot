@@ -25,9 +25,11 @@ executable xmppbot
                     , data-default >= 0.5
                     , fast-logger >= 2.0
                     , feed >= 0.3
-                    , http-types >= 0.8
                     , http-conduit >= 2.0
+                    , http-client
+                    , http-types >= 0.8
                     , hoauth >= 0.3
+                    , mtl
                     , persistent-template >= 1.2
                     , persistent >= 1.2
                     , persistent-postgresql >= 1.2

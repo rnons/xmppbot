@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
-import           Control.Monad (forever, forM, forM_, void, when, unless)
+import           Control.Monad.Reader
 import           Data.Aeson (FromJSON)
 import qualified Data.ByteString.Char8 as C
 import           Data.Default (def)
@@ -14,6 +14,8 @@ import           Database.Persist
 import           Database.Persist.Postgresql
 import           GHC.Generics (Generic)
 import           GHC.IO.FD (openFile)
+import           Network.HTTP.Conduit (Manager, newManager, closeManager)
+import           Network.HTTP.Client (defaultManagerSettings)
 import           Network.TLS ( Params(pConnectVersion, pAllowedVersions, pCiphers)
                              , Version(TLS10, TLS11, TLS12)
                              , defaultParamsClient )
@@ -44,11 +46,21 @@ data Database = Database
     } deriving (Show, Generic)
 instance FromJSON Database
 
-data Bot = Bot
+data Xmpp = Xmpp
     { xmppUsername       :: Text
     , xmppPassword       :: Text
     } deriving (Show, Generic)
-instance FromJSON Bot
+instance FromJSON Xmpp
+
+data Bot = Bot
+    { botSession :: Session
+    , botManager :: Manager
+    }
+
+type Xmppbot = ReaderT Bot IO
+
+runXmppbot :: Session -> Manager -> Xmppbot () -> IO ()
+runXmppbot sess manager act = runReaderT act (Bot sess manager)
 
 mkConnStr :: Database -> C.ByteString
 mkConnStr s = C.pack $ "host=" ++ host s ++
@@ -78,7 +90,10 @@ main = do
     sess <- newSession config
     sendPresence def sess
     case args of
-        [] -> loop sess
+        [] -> do
+            manager <- newManager defaultManagerSettings
+            runXmppbot sess manager loop
+            closeManager manager
         xs -> mapM_ (handleFeed config sess) xs
 
     sendPresence presenceOffline sess
@@ -102,11 +117,14 @@ newSession config = do
         Left e  -> putStrLn "Session Failed." >>
                    error ("XmppFailure: " ++ show e)
 
-loop :: Session -> IO ()
-loop sess = forever $ do
+loop :: Xmppbot ()
+loop = do
+    sess <- botSession `liftM` ask
+    manager <- botManager `liftM` ask
+    lift $ forever $ do
         msg <- getMessage sess
         tr <- forM (imBody $ fromJust $ getIM msg) $ \m ->
-            translate $ T.unpack $ bodyContent m
+            translate manager $ T.unpack $ bodyContent m
         let body = map (MessageBody Nothing . T.pack) tr
         case answerIM body msg of
             Just answer -> void $ sendMessage answer sess
