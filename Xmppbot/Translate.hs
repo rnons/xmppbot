@@ -3,9 +3,10 @@ module Xmppbot.Translate
   ( translate
   ) where
 
-import           Data.Attoparsec.ByteString.Lazy
+import           Data.Attoparsec.ByteString
 import           Data.ByteString.UTF8 (fromString, toString)
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Lazy as L
 import           Network.HTTP.Types
 import           Network.HTTP.Conduit
 
@@ -27,7 +28,7 @@ translate manager q = do
     initReq <- parseUrl url
     let req = initReq { queryString = renderSimpleQuery False query}
     res <- httpLbs req manager
-    case eitherResult $ parse trParser (responseBody res) of
+    case parseOnly trParser $ L.toStrict (responseBody res) of
         Right p -> return $ toString p
         Left err -> error err
 
