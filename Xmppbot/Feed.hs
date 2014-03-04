@@ -13,7 +13,7 @@ import           Network.OAuth.Consumer (Token)
 import           Text.Feed.Import (parseFeedString)
 import qualified Text.Feed.Types as F
 import           Text.Feed.Query ( feedItems, getItemTitle
-                                 , getItemPublishDate, getItemLink)
+                                 , getItemPublishDateString, getItemLink)
 import qualified Web.Twitter as TT
 import Model
 
@@ -45,7 +45,7 @@ makeItem :: String -> String -> F.Item -> Maybe FeedItem
 makeItem contact src item =
     FeedItem <$> Just src
              <*> getItemTitle item
-             <*> getItemPublishDate item
+             <*> getItemPublishDateString item
              <*> getItemLink item
              <*> Just contact
 

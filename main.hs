@@ -16,9 +16,7 @@ import           GHC.Generics (Generic)
 import           GHC.IO.FD (openFile)
 import           Network.HTTP.Conduit (Manager, newManager, closeManager)
 import           Network.HTTP.Client (defaultManagerSettings)
-import           Network.TLS ( Params(pConnectVersion, pAllowedVersions, pCiphers)
-                             , Version(TLS10, TLS11, TLS12)
-                             , defaultParamsClient )
+import           Network.TLS
 import           Network.TLS.Extra (ciphersuite_medium)
 import           Network.Wai.Logger (clockDateCacher)
 import           Network.Xmpp
@@ -108,10 +106,14 @@ newSession config = do
                                     Nothing
                                     (xmppPassword bot)], Nothing))
                 def { sessionStreamConfiguration = def
-                        { tlsParams = defaultParamsClient
-                            { pConnectVersion = TLS10
-                            , pAllowedVersions = [TLS10, TLS11, TLS12]
-                            , pCiphers = ciphersuite_medium } } }
+                        { tlsParams = (defaultParamsClient "" C.empty)
+                            { clientSupported = def
+                                { supportedVersions = [TLS10, TLS11, TLS12]
+                                , supportedCiphers = ciphersuite_medium
+                                }
+                            }
+                        }
+                    }
     case result of
         Right s -> putStrLn "Session created." >> return s
         Left e  -> putStrLn "Session Failed." >>
@@ -133,7 +135,7 @@ loop = do
 handleFeed :: Config -> Session -> String -> IO ()
 handleFeed config sess list = do
     (fd, _) <- openFile "bot.log" AppendMode True
-    logger <- newLoggerSet defaultBufSize fd
+    logger <- newStdoutLoggerSet defaultBufSize
     db <- lookup "Database" config
     tk <- lookup "Twitter" config
     feedList <- load list

@@ -37,7 +37,6 @@ executable xmppbot
                     , random >= 1.0
                     , text >= 0.11
                     , tls
-                    , tls-extra
                     , unordered-containers >= 0.2
                     , utf8-string >= 0.3
                     , wai-logger >= 2.0
