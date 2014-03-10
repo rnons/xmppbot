@@ -3,7 +3,6 @@
 import           Control.Monad.Reader
 import           Data.Aeson (FromJSON)
 import qualified Data.ByteString.Char8 as C
-import           Data.Default (def)
 import           Data.Either (rights)
 import           Data.Maybe
 import           Data.Monoid ((<>))
@@ -16,11 +15,10 @@ import           GHC.Generics (Generic)
 import           GHC.IO.FD (openFile)
 import           Network.HTTP.Conduit (Manager, newManager, closeManager)
 import           Network.HTTP.Client (defaultManagerSettings)
-import           Network.TLS
-import           Network.TLS.Extra (ciphersuite_medium)
 import           Network.Wai.Logger (clockDateCacher)
 import           Network.Xmpp
 import           Network.Xmpp.IM
+import           Network.Xmpp.Lens (set)
 import           Prelude hiding (lookup)
 import           System.Environment (getArgs)
 import           System.IO (IOMode(AppendMode))
@@ -56,6 +54,9 @@ data Bot = Bot
     }
 
 type Xmppbot = ReaderT Bot IO
+
+xmppConf :: SessionConfiguration
+xmppConf = set tlsServerIdentificationL ("talk.google.com", "") def
 
 runXmppbot :: Session -> Manager -> Xmppbot () -> IO ()
 runXmppbot sess manager act = runReaderT act (Bot sess manager)
@@ -102,18 +103,8 @@ newSession config = do
     bot <- lookup "Bot" config
     result <-
         session "google.com"
-                (Just (const [plain (xmppUsername bot)
-                                    Nothing
-                                    (xmppPassword bot)], Nothing))
-                def { sessionStreamConfiguration = def
-                        { tlsParams = (defaultParamsClient "" C.empty)
-                            { clientSupported = def
-                                { supportedVersions = [TLS10, TLS11, TLS12]
-                                , supportedCiphers = ciphersuite_medium
-                                }
-                            }
-                        }
-                    }
+                (simpleAuth (xmppUsername bot) (xmppPassword bot))
+                xmppConf
     case result of
         Right s -> putStrLn "Session created." >> return s
         Left e  -> putStrLn "Session Failed." >>
